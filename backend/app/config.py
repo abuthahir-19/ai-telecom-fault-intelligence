@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     TOP_K: int = 10
     RRF_K: int = 60
 
+    # LangSmith tracing (loaded from .env)
+    LANGCHAIN_API_KEY: str = ""
+    LANGCHAIN_TRACING_V2: str = "false"
+    LANGCHAIN_PROJECT: str = "telecom-fault-intel"
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
+
 
 @lru_cache
 def get_settings() -> Settings:

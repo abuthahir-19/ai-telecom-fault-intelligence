@@ -54,7 +54,14 @@ def validate_query(query: str) -> Dict[str, Any]:
             return result
 
     query_lower = query.lower()
-    has_telecom_keyword = any(kw in query_lower for kw in TELECOM_KEYWORDS)
+
+    def _kw_match(kw: str, text: str) -> bool:
+        """Word-boundary match for single-word keywords; substring match for phrases."""
+        if ' ' in kw:
+            return kw in text   # multi-word: spaces already act as delimiters
+        return bool(re.search(r'\b' + re.escape(kw) + r'\b', text))
+
+    has_telecom_keyword = any(_kw_match(kw, query_lower) for kw in TELECOM_KEYWORDS)
     if not has_telecom_keyword:
         result["warnings"].append(
             "No telecom-specific keywords detected. Results may be less accurate. "

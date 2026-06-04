@@ -145,7 +145,7 @@ def generate_forecast(
                 {"role": "system", "content": FORECAST_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-            max_tokens=700,
+            max_tokens=500,
         )
         return resp.choices[0].message.content or "Forecast generation failed."
     except Exception as e:

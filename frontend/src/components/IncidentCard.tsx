@@ -32,11 +32,17 @@ const IncidentCard: React.FC<IncidentCardProps> = ({ incident, rank }) => {
     : null;
 
   const formatTimestamp = (ts: string) => {
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return ts;
-    }
+    try { return new Date(ts).toLocaleString(); } catch { return ts; }
+  };
+
+  const formatDuration = (raw: string | number): string => {
+    const mins = typeof raw === 'number' ? raw : parseFloat(String(raw));
+    if (isNaN(mins)) return String(raw);
+    if (mins < 1)  return '< 1 min';
+    if (mins < 60) return `${Math.round(mins)} min`;
+    const h = Math.floor(mins / 60);
+    const m = Math.round(mins % 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
   };
 
   return (
@@ -117,7 +123,7 @@ const IncidentCard: React.FC<IncidentCardProps> = ({ incident, rank }) => {
         {incident.outage_duration && (
           <span className="flex items-center gap-1">
             <Timer size={11} />
-            Duration: {incident.outage_duration}
+            {formatDuration(incident.outage_duration)}
           </span>
         )}
         {incident.chroma_score != null && (

@@ -1,3 +1,20 @@
+import os
+
+# ── LangSmith tracing bootstrap ──────────────────────────────────────────────
+# Must happen BEFORE any LangChain/LangGraph module is imported because
+# langchain_core.tracers reads os.environ at import time.
+from backend.app.config import get_settings as _get_settings
+_s = _get_settings()
+for _key, _val in {
+    "LANGCHAIN_API_KEY":    _s.LANGCHAIN_API_KEY,
+    "LANGCHAIN_TRACING_V2": _s.LANGCHAIN_TRACING_V2,
+    "LANGCHAIN_PROJECT":    _s.LANGCHAIN_PROJECT,
+    "LANGCHAIN_ENDPOINT":   _s.LANGCHAIN_ENDPOINT,
+}.items():
+    if _val:
+        os.environ[_key] = _val
+# ─────────────────────────────────────────────────────────────────────────────
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

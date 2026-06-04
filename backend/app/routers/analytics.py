@@ -227,7 +227,7 @@ async def summarize_outages(request: SummarizeRequest):
                 {"role": "system", "content": SUMMARIZE_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-            max_tokens=800,
+            max_tokens=500,
         )
         summary = resp.choices[0].message.content or "Summary generation failed."
     except Exception as e:

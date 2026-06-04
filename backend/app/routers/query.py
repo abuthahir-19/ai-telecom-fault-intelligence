@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from backend.app.models.query import QueryRequest, QueryResponse
 from backend.app.rag.hybrid_retriever import get_hybrid_retriever
 from backend.app.utils.guardrails import validate_query
@@ -11,8 +11,19 @@ router = APIRouter(prefix="/api", tags=["Query"])
 @router.post("/query", response_model=QueryResponse)
 async def query_incidents(request: QueryRequest):
     guard = validate_query(request.query)
+
+    # Return a structured 200 response even when blocked so the UI can
+    # render the GuardrailPanel with the reason instead of a generic 422.
     if not guard["valid"]:
-        raise HTTPException(status_code=422, detail=guard["error"])
+        logger.info(f"Query blocked by guardrail: {guard['error']!r}")
+        return QueryResponse(
+            query=request.query,
+            guardrail_result=guard,
+            guardrail_warnings=[],
+            incidents=[],
+            root_cause_suggestion="",
+            total_results=0,
+        )
 
     retriever = get_hybrid_retriever()
     filters = request.filters.model_dump(exclude_none=True) if request.filters else {}
@@ -42,6 +53,7 @@ async def query_incidents(request: QueryRequest):
 
     return QueryResponse(
         query=request.query,
+        guardrail_result=guard,
         guardrail_warnings=guard.get("warnings", []),
         incidents=incidents,
         root_cause_suggestion=root_cause_suggestion,

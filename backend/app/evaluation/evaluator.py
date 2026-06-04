@@ -1,76 +1,59 @@
 """
-Evaluation module using DeepEval metrics.
+Evaluation module — RAGAS-aligned RAG quality metrics.
 
-Three evaluation dimensions (RAGAS-aligned):
-  1. Faithfulness         — root cause & recommendations grounded in retrieved incidents
-  2. Answer Relevancy     — root cause directly addresses the query
-  3. Contextual Relevancy — fraction of retrieved incidents that are truly relevant
+Three dimensions measured with direct LLM-as-judge calls:
+  1. Faithfulness         — is the answer grounded in retrieved incidents?
+  2. Answer Relevancy     — does the answer address the original query?
+  3. Context Precision    — are the retrieved incidents relevant to the query?
 
-Uses a custom DeepEvalBaseLLM subclass so all LLM calls go through our configured
-OpenAI client (supports custom base_url + SSL bypass for the corporate proxy gateway).
+Why direct LLM calls instead of DeepEval's built-in metric objects:
+  DeepEval's FaithfulnessMetric / AnswerRelevancyMetric internally make
+  multiple sequential LLM calls whose combined JSON responses easily exceed
+  the proxy's max_tokens=500 hard cap, causing truncated / invalid-JSON
+  failures.  Each metric here is ONE focused call whose expected response
+  is well under 300 tokens.
 
-Also provides an LLM cross-encoder reranker that rescores retrieved incidents
-and blends judge_score with rrf_score for improved ranking.
+Also provides an LLM cross-encoder reranker (rerank_incidents).
 """
 
 import json
-from typing import List, Dict, Any, Optional, Union
+import re
+from typing import List, Dict, Any, Union
 from loguru import logger
-
-from deepeval.models.base_model import DeepEvalBaseLLM
-from deepeval.test_case import LLMTestCase
-from deepeval.metrics import (
-    FaithfulnessMetric,
-    AnswerRelevancyMetric,
-    ContextualRelevancyMetric,
-)
 
 from backend.app.config import get_settings, get_openai_client
 
 
-# ── Custom DeepEval LLM wrapper ───────────────────────────────────────────────
+# ── JSON extraction helper ────────────────────────────────────────────────────
 
-class _TelecomEvalModel(DeepEvalBaseLLM):
+def _extract_json(text: str) -> str:
     """
-    Routes DeepEval metric LLM calls through our OpenAI client.
-    This ensures the custom base_url and SSL-bypass httpx client are used
-    instead of DeepEval's default OpenAI instantiation.
+    Pull a JSON object out of an LLM response that may contain:
+      • Markdown code fences  (```json … ```)
+      • Preamble text before the first {
+      • Trailing prose after the closing }
+    Returns the best candidate JSON string found, or the original text.
     """
+    text = text.strip()
+    # Strip markdown code fences
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+        text = re.sub(r"\n?\s*```\s*$", "", text)
+        text = text.strip()
+    # If the response doesn't start with { or [, find the first JSON block
+    if text and text[0] not in "{[":
+        m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+        if m:
+            text = m.group(1)
+    return text
 
-    def __init__(self):
-        self._client = get_openai_client()
-        self._model_name = get_settings().OPENAI_MODEL
 
-    def load_model(self):
-        return self._client
-
-    def generate(self, prompt: str, schema=None) -> Union[str, Any]:
-        if schema is not None:
-            resp = self._client.chat.completions.create(
-                model=self._model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                response_format={"type": "json_object"},
-                max_tokens=512,
-            )
-            raw = resp.choices[0].message.content or "{}"
-            try:
-                return schema(**json.loads(raw))
-            except Exception:
-                return raw
-        resp = self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=512,
-        )
-        return resp.choices[0].message.content or ""
-
-    async def a_generate(self, prompt: str, schema=None) -> Union[str, Any]:
-        return self.generate(prompt, schema=schema)
-
-    def get_model_name(self) -> str:
-        return self._model_name
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Convert a value to float clamped to [0, 1]."""
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 # ── LLM Reranker ──────────────────────────────────────────────────────────────
@@ -95,11 +78,7 @@ def rerank_incidents(
 ) -> List[Dict[str, Any]]:
     """
     LLM cross-encoder reranker.
-
-    For each retrieved incident, calls the LLM to score relevance (0-1).
-    Blends:  combined_score = 0.6 * judge_score + 0.4 * normalised_rrf_score
-    Returns top_k incidents sorted by combined_score descending.
-    Each incident dict gets three new fields: judge_score, judge_reason, combined_score.
+    Blends: combined_score = 0.6 * judge_score + 0.4 * normalised_rrf_score
     """
     if not incidents:
         return []
@@ -125,22 +104,20 @@ def rerank_incidents(
                     {"role": "user", "content": f"Query: {query}\n\nIncident:\n{snippet}"},
                 ],
                 max_tokens=80,
-                response_format={"type": "json_object"},
             )
-            data = json.loads(resp.choices[0].message.content or "{}")
-            judge_score = float(data.get("score", 0.5))
+            raw = _extract_json(resp.choices[0].message.content or "{}")
+            data = json.loads(raw)
+            judge_score = _safe_float(data.get("score"), 0.5)
             judge_reason = str(data.get("reason", ""))
         except Exception as e:
             logger.debug(f"Reranker error for {inc.get('alarm_id')}: {e}")
             judge_score, judge_reason = 0.5, ""
 
         rrf = float(inc.get("rrf_score", 0.0))
-        normalised_rrf = min(rrf * 200, 1.0)
-        combined = round(0.6 * judge_score + 0.4 * normalised_rrf, 4)
-
+        combined = round(0.6 * judge_score + 0.4 * min(rrf * 200, 1.0), 4)
         inc = inc.copy()
-        inc["judge_score"] = round(judge_score, 3)
-        inc["judge_reason"] = judge_reason
+        inc["judge_score"]   = round(judge_score, 3)
+        inc["judge_reason"]  = judge_reason
         inc["combined_score"] = combined
         scored.append(inc)
 
@@ -149,7 +126,7 @@ def rerank_incidents(
     return scored[:top_k]
 
 
-# ── DeepEval evaluation ───────────────────────────────────────────────────────
+# ── RAG Evaluation (direct LLM-as-judge) ──────────────────────────────────────
 
 def evaluate_analysis(
     query: str,
@@ -158,107 +135,157 @@ def evaluate_analysis(
     recommendations: List[str],
 ) -> Dict[str, Any]:
     """
-    Evaluates RAG output quality using DeepEval metrics.
+    Evaluates RAG output quality using three RAGAS-aligned metrics.
 
-    Metrics:
-      • FaithfulnessMetric      — is the answer grounded in the retrieved context?
-      • AnswerRelevancyMetric   — does the answer address the query?
-      • ContextualRelevancyMetric — are retrieved incidents relevant to the query?
+    Each metric is a single focused LLM call whose expected JSON response
+    is under 300 tokens — safely within the proxy's max_tokens=500 limit.
 
-    Weighted overall score (RAGAS-aligned):
-      overall = 0.40 * faithfulness + 0.35 * answer_relevance + 0.25 * context_relevancy
+    Weighted overall score:
+        overall = 0.40 × faithfulness + 0.35 × answer_relevancy + 0.25 × context_precision
     """
-    model = _TelecomEvalModel()
+    client     = get_openai_client()
+    model_name = get_settings().OPENAI_MODEL
 
-    # Build the "actual output" shown to DeepEval as the generated answer
-    actual_output = (
-        f"Root Cause Analysis:\n{root_cause}\n\n"
-        f"Recommendations:\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(recommendations[:10]))
-    )
+    # ── Shared helper ─────────────────────────────────────────────────────────
+    def _judge(prompt: str) -> Dict[str, Any]:
+        """One LLM call; returns parsed dict or {} on any failure."""
+        try:
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict JSON-only evaluator. "
+                            "Output a single JSON object. "
+                            "No markdown, no code fences, no text outside the JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=350,
+            )
+            raw = resp.choices[0].message.content or "{}"
+            return json.loads(_extract_json(raw))
+        except Exception as exc:
+            logger.warning(f"[Eval] LLM call failed: {exc}")
+            return {}
 
-    # Build retrieval context strings (one per incident)
-    retrieval_context = [
-        (
-            f"[{inc.get('alarm_id', '?')}] "
-            f"{inc.get('technology_type', '?')} | "
-            f"{inc.get('network_region', '?')} | "
-            f"{inc.get('severity', '?')} | "
-            f"{inc.get('device_vendor', '?')} -- "
-            f"{str(inc.get('incident_description', ''))[:200]} "
-            f"Resolution: {str(inc.get('resolution_notes', ''))[:100]}"
-        )
-        for inc in retrieved_incidents[:8]
-    ]
+    # ── Compact input representations (keep prompts small) ───────────────────
+    answer_text = (
+        f"Root cause: {root_cause[:300]}\n"
+        f"Recommendations: {' | '.join(recommendations[:5])}"
+    )[:500]
 
-    test_case = LLMTestCase(
-        input=query,
-        actual_output=actual_output,
-        retrieval_context=retrieval_context,
+    context_lines = "\n".join(
+        f"[{inc.get('alarm_id','?')}] "
+        f"{inc.get('technology_type','?')} | "
+        f"{inc.get('network_region','?')} | "
+        f"{inc.get('severity','?')} — "
+        f"{str(inc.get('incident_description',''))[:120]}"
+        for inc in retrieved_incidents[:5]
     )
 
     results: Dict[str, Any] = {
         "query": query,
-        "faithfulness": {},
+        "faithfulness":     {},
         "answer_relevance": {},
-        "context_precision": {},
-        "overall_score": 0.0,
+        "context_precision":{},
+        "overall_score":    0.0,
         "evaluation_summary": "",
     }
+    f_score = rv_score = p_score = 0.0
 
-    f_score, rv_score, p_score = 0.0, 0.0, 0.0
-
-    # 1. Faithfulness
-    try:
-        faithfulness = FaithfulnessMetric(model=model, threshold=0.5, verbose_mode=False)
-        faithfulness.measure(test_case)
-        f_score = faithfulness.score or 0.0
+    # ── 1. Faithfulness ───────────────────────────────────────────────────────
+    # Is the generated answer grounded in the retrieved evidence?
+    data = _judge(
+        f"Query: {query[:150]}\n\n"
+        f"Generated analysis:\n{answer_text}\n\n"
+        f"Retrieved evidence:\n{context_lines}\n\n"
+        "Task: Rate FAITHFULNESS (0.0–1.0).\n"
+        "Faithfulness = fraction of key claims in the analysis that are supported "
+        "by the retrieved evidence.\n"
+        "1.0 = every claim is grounded | 0.0 = no claims are grounded\n\n"
+        'Return exactly: {"faithfulness_score": <0.0-1.0>, '
+        '"grounding_assessment": "<one sentence>", "issues": ["<issue1>"]}'
+    )
+    if data:
+        f_score = _safe_float(data.get("faithfulness_score"))
         results["faithfulness"] = {
-            "faithfulness_score": round(f_score, 3),
-            "grounding_assessment": faithfulness.reason or "",
+            "faithfulness_score":   round(f_score, 3),
+            "grounding_assessment": str(data.get("grounding_assessment", "")),
+            "issues":               list(data.get("issues", [])),
+        }
+        logger.info(f"Faithfulness: {f_score:.3f} — {data.get('grounding_assessment','')[:80]}")
+    else:
+        results["faithfulness"] = {
+            "faithfulness_score": 0.0,
+            "grounding_assessment": "Evaluation unavailable",
             "issues": [],
         }
-        logger.info(f"DeepEval Faithfulness: {f_score:.3f} — {faithfulness.reason}")
-    except Exception as e:
-        logger.warning(f"FaithfulnessMetric failed: {e}")
-        results["faithfulness"] = {"faithfulness_score": 0.0, "grounding_assessment": str(e), "issues": []}
+        logger.warning("Faithfulness metric failed — LLM returned no data")
 
-    # 2. Answer Relevancy
-    try:
-        relevancy = AnswerRelevancyMetric(model=model, threshold=0.5, verbose_mode=False)
-        relevancy.measure(test_case)
-        rv_score = relevancy.score or 0.0
+    # ── 2. Answer Relevancy ───────────────────────────────────────────────────
+    # Does the generated answer directly address the original query?
+    data = _judge(
+        f"Query: {query[:150]}\n\n"
+        f"Generated analysis:\n{answer_text}\n\n"
+        "Task: Rate ANSWER RELEVANCY (0.0–1.0).\n"
+        "Answer relevancy = how directly and completely the analysis addresses the query.\n"
+        "1.0 = fully on-topic and complete | 0.0 = completely off-topic\n\n"
+        'Return exactly: {"relevance_score": <0.0-1.0>, '
+        '"relevance_assessment": "<one sentence>", "missing_aspects": ["<aspect1>"]}'
+    )
+    if data:
+        rv_score = _safe_float(data.get("relevance_score"))
         results["answer_relevance"] = {
-            "relevance_score": round(rv_score, 3),
-            "relevance_assessment": relevancy.reason or "",
+            "relevance_score":       round(rv_score, 3),
+            "relevance_assessment":  str(data.get("relevance_assessment", "")),
+            "missing_aspects":       list(data.get("missing_aspects", [])),
+        }
+        logger.info(f"Answer Relevancy: {rv_score:.3f} — {data.get('relevance_assessment','')[:80]}")
+    else:
+        results["answer_relevance"] = {
+            "relevance_score": 0.0,
+            "relevance_assessment": "Evaluation unavailable",
             "missing_aspects": [],
         }
-        logger.info(f"DeepEval Answer Relevancy: {rv_score:.3f} — {relevancy.reason}")
-    except Exception as e:
-        logger.warning(f"AnswerRelevancyMetric failed: {e}")
-        results["answer_relevance"] = {"relevance_score": 0.0, "relevance_assessment": str(e), "missing_aspects": []}
+        logger.warning("Answer Relevancy metric failed — LLM returned no data")
 
-    # 3. Contextual Relevancy
-    try:
-        ctx_relevancy = ContextualRelevancyMetric(model=model, threshold=0.5, verbose_mode=False)
-        ctx_relevancy.measure(test_case)
-        p_score = ctx_relevancy.score or 0.0
+    # ── 3. Context Precision ──────────────────────────────────────────────────
+    # What fraction of the retrieved incidents are genuinely relevant to the query?
+    data = _judge(
+        f"Query: {query[:150]}\n\n"
+        f"Retrieved incidents:\n{context_lines}\n\n"
+        "Task: Rate CONTEXT PRECISION (0.0–1.0).\n"
+        "Context precision = fraction of retrieved incidents that are relevant to the query.\n"
+        "1.0 = all retrieved incidents are relevant | 0.0 = none are relevant\n\n"
+        'Return exactly: {"context_precision_score": <0.0-1.0>, '
+        '"precision_assessment": "<one sentence>"}'
+    )
+    if data:
+        p_score = _safe_float(data.get("context_precision_score"))
         results["context_precision"] = {
             "context_precision_score": round(p_score, 3),
-            "precision_assessment": ctx_relevancy.reason or "",
+            "precision_assessment":    str(data.get("precision_assessment", "")),
         }
-        logger.info(f"DeepEval Contextual Relevancy: {p_score:.3f} — {ctx_relevancy.reason}")
-    except Exception as e:
-        logger.warning(f"ContextualRelevancyMetric failed: {e}")
-        results["context_precision"] = {"context_precision_score": 0.0, "precision_assessment": str(e)}
+        logger.info(f"Context Precision: {p_score:.3f} — {data.get('precision_assessment','')[:80]}")
+    else:
+        results["context_precision"] = {
+            "context_precision_score": 0.0,
+            "precision_assessment": "Evaluation unavailable",
+        }
+        logger.warning("Context Precision metric failed — LLM returned no data")
 
+    # ── Overall score (RAGAS-aligned weights) ─────────────────────────────────
     overall = round(f_score * 0.40 + rv_score * 0.35 + p_score * 0.25, 3)
     results["overall_score"] = overall
     results["evaluation_summary"] = (
-        f"Overall: {overall:.0%} | "
-        f"Faithfulness: {f_score:.0%} | "
-        f"Answer Relevance: {rv_score:.0%} | "
-        f"Contextual Relevancy: {p_score:.0%}"
+        f"Overall: {overall:.0%}  |  "
+        f"Faithfulness: {f_score:.0%}  |  "
+        f"Answer Relevancy: {rv_score:.0%}  |  "
+        f"Context Precision: {p_score:.0%}"
     )
-
-    logger.info(f"DeepEval evaluation complete — {results['evaluation_summary']}")
+    logger.info(f"Evaluation complete — {results['evaluation_summary']}")
     return results

@@ -12,13 +12,18 @@ class MetadataFilters(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=10, max_length=2000, description="Natural language fault query")
+    # min_length removed — custom guardrail returns a structured 200 response
+    # instead of letting Pydantic throw a generic 422 before our code runs.
+    query: str = Field(..., min_length=1, max_length=2000, description="Natural language fault query")
     filters: Optional[MetadataFilters] = None
     top_k: int = Field(default=10, ge=1, le=50)
 
 
 class QueryResponse(BaseModel):
     query: str
+    guardrail_result: Dict[str, Any] = Field(
+        default_factory=lambda: {"valid": True, "warnings": [], "error": None}
+    )
     guardrail_warnings: List[str] = []
     incidents: List[Dict[str, Any]] = []
     root_cause_suggestion: str = ""
@@ -26,7 +31,7 @@ class QueryResponse(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
-    query: str = Field(..., min_length=10, max_length=2000)
+    query: str = Field(..., min_length=1, max_length=2000)
     filters: Optional[MetadataFilters] = None
     top_k: int = Field(default=10, ge=1, le=50)
 

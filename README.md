@@ -56,25 +56,25 @@ Telecom NOC teams face hundreds of alarms per hour. This platform provides:
 ## 3. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  React Frontend (Vite + TypeScript + TailwindCSS)               │
+┌──────────────────────────────────────────────────────────────────┐
+│  React Frontend (Vite + TypeScript + TailwindCSS)                │
 │  QueryInput │ IncidentCard │ AgentTrace │ RootCausePanel         │
 │  RecommendationList │ AnalyticsDashboard │ ErrorBoundary         │
-└────────────────────────┬────────────────────────────────────────┘
+└────────────────────────┬─────────────────────────────────────────┘
                          │ HTTP (axios)
-┌────────────────────────▼────────────────────────────────────────┐
+┌────────────────────────▼─────────────────────────────────────────┐
 │  FastAPI Backend                                                 │
-│  /api/query  /api/analyze  /api/analytics/*  /api/ingest        │
+│  /api/query  /api/analyze  /api/analytics/*  /api/ingest         │
 │  /api/summarize  /api/evaluate  /api/rerank  /api/incidents      │
-└──────┬──────────────────┬───────────────────────────────────────┘
+└──────┬──────────────────┬────────────────────────────────────────┘
        │                  │
-┌──────▼──────┐   ┌───────▼─────────────────────────────────────┐
+┌──────▼──────┐   ┌───────▼──────────────────────────────────────┐
 │  RAG Layer  │   │  LangGraph Agent Pipeline                    │
 │ ChromaDB    │   │  Agent 1: Alarm Retrieval                    │
 │ BM25 Index  │   │  Agent 2: Cross-Correlation                  │
 │ Hybrid RRF  │   │  Agent 3: Root Cause Analysis                │
 └─────────────┘   │  Agent 4: Resolution Recommendation          │
-                  └─────────────────────────────────────────────┘
+                  └──────────────────────────────────────────────┘
 ```
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full system diagram and component descriptions.

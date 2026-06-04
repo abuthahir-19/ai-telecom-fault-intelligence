@@ -36,6 +36,7 @@ export interface CorrelationCluster {
 
 export interface QueryResponse {
   query: string;
+  guardrail_result: GuardrailResult;
   guardrail_warnings: string[];
   incidents: Incident[];
   root_cause_suggestion: string;
@@ -44,7 +45,7 @@ export interface QueryResponse {
 
 export interface AnalysisResponse {
   query: string;
-  guardrail_result: Record<string, unknown>;
+  guardrail_result: GuardrailResult;
   retrieved_incidents: Incident[];
   correlated_alarms: CorrelationCluster[];
   root_cause: string;
@@ -54,7 +55,13 @@ export interface AnalysisResponse {
   severity_escalated: boolean;
 }
 
-export type AppMode = 'query' | 'analyze' | 'dashboard';
+export type AppMode = 'query' | 'analyze' | 'dashboard' | 'evaluate';
+
+export interface GuardrailResult {
+  valid: boolean;
+  warnings: string[];
+  error: string | null;
+}
 
 export interface AnalyticsSummary {
   total_incidents: number;

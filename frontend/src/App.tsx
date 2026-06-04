@@ -7,8 +7,10 @@ import RootCausePanel from './components/RootCausePanel';
 import RecommendationList from './components/RecommendationList';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import ErrorBoundary from './components/ErrorBoundary';
-import { getHealth, triggerIngest, getIngestStatus } from './api/client';
-import type { QueryResponse, AnalysisResponse, AppMode } from './types';
+import EvaluationPanel from './components/EvaluationPanel';
+import GuardrailPanel from './components/GuardrailPanel';
+import { getHealth, triggerIngest, getIngestStatus, evaluateAnalysis } from './api/client';
+import type { QueryResponse, AnalysisResponse, AppMode, EvaluationResult } from './types';
 import type { IngestStatus } from './api/client';
 
 interface HealthState {
@@ -25,6 +27,8 @@ const App: React.FC = () => {
   const [healthError, setHealthError] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [ingestStatus, setIngestStatus] = useState<IngestStatus | null>(null);
+  const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
+  const [evalLoading, setEvalLoading] = useState(false);
 
   const fetchHealth = async () => {
     try {
@@ -35,6 +39,10 @@ const App: React.FC = () => {
       setHealthError(true);
     }
   };
+
+  useEffect(() => {
+    document.title = 'FaultSense — Telecom Network Intelligence';
+  }, []);
 
   useEffect(() => {
     fetchHealth();
@@ -73,13 +81,30 @@ const App: React.FC = () => {
   const handleQueryResult = (result: QueryResponse) => {
     setQueryResult(result);
     setAnalysisResult(null);
+    setEvalResult(null);
     setMode('query');
   };
 
-  const handleAnalysisResult = (result: AnalysisResponse) => {
+  const handleAnalysisResult = async (result: AnalysisResponse) => {
     setAnalysisResult(result);
     setQueryResult(null);
+    setEvalResult(null);
     setMode('analyze');
+    // Auto-run DeepEval metrics right after analysis
+    setEvalLoading(true);
+    try {
+      const ev = await evaluateAnalysis({
+        query: result.query,
+        retrieved_incidents: result.retrieved_incidents,
+        root_cause: result.root_cause,
+        recommendations: result.recommendations,
+      });
+      setEvalResult(ev);
+    } catch {
+      // evaluation failure is non-critical — analysis results are still shown
+    } finally {
+      setEvalLoading(false);
+    }
   };
 
   const handleIngest = async () => {
@@ -105,17 +130,71 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-slate-950 flex flex-col">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 relative flex items-center">
+
+          {/* ── Left: brand ── */}
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-blue-600/20 border border-blue-600/30">
               <Radio size={20} className="text-blue-400" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-white tracking-tight">TelecomNetworkFaultIntel</h1>
-              <p className="text-xs text-slate-500 hidden sm:block">AI-powered telecom fault analysis with RAG + LangGraph agents</p>
+              <h1 className="text-base font-bold tracking-tight">
+                <span className="text-blue-400">Fault</span><span className="text-white">Sense</span>
+                <span className="ml-1.5 text-xs font-semibold text-slate-500 align-middle">AI</span>
+              </h1>
+              <p className="text-xs text-slate-500 hidden lg:block">Telecom Network Intelligence · RAG + LangGraph</p>
             </div>
           </div>
 
+          {/* ── Centre: mode navigation tabs — absolutely centred on the full navbar ── */}
+          <nav className="hidden md:flex items-center absolute left-1/2 -translate-x-1/2">
+            <button
+              onClick={() => setMode('query')}
+              className={`mx-1.5 px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                mode === 'query'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              Query Mode
+            </button>
+            <button
+              onClick={() => setMode('analyze')}
+              className={`mx-1.5 px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                mode === 'analyze'
+                  ? 'bg-violet-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              Deep Analysis
+            </button>
+            <button
+              onClick={() => setMode('dashboard')}
+              className={`mx-1.5 px-4 py-1.5 text-sm font-medium rounded-md flex items-center gap-1.5 transition-colors ${
+                mode === 'dashboard'
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              <BarChart2 size={13} />
+              Analytics
+            </button>
+            <button
+              onClick={() => setMode('evaluate')}
+              className={`mx-1.5 px-4 py-1.5 text-sm font-medium rounded-md flex items-center gap-1.5 transition-colors ${
+                mode === 'evaluate'
+                  ? 'bg-violet-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              Evaluation
+              {(evalLoading || evalResult) && (
+                <span className={`w-2 h-2 rounded-full shrink-0 ${evalLoading ? 'bg-yellow-400 animate-pulse' : 'bg-violet-400'}`} />
+              )}
+            </button>
+          </nav>
+
+          {/* ── Right: status + action buttons ── */}
           <div className="ml-auto flex items-center gap-3">
 
             {/* ── Ingestion progress (replaces health indicator while running) ── */}
@@ -201,38 +280,14 @@ const App: React.FC = () => {
 
       {/* Main content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Mode tabs — always visible */}
-        <div className="flex gap-1 bg-slate-800/50 rounded-xl p-1 w-fit">
-          <button
-            onClick={() => setMode('query')}
-            className={`text-sm px-4 py-2 rounded-lg transition-all font-medium ${
-              mode === 'query'
-                ? 'bg-blue-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
-            }`}
-          >
-            Query Mode
-          </button>
-          <button
-            onClick={() => setMode('analyze')}
-            className={`text-sm px-4 py-2 rounded-lg transition-all font-medium ${
-              mode === 'analyze'
-                ? 'bg-violet-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
-            }`}
-          >
-            Deep Analysis
-          </button>
-          <button
-            onClick={() => setMode('dashboard')}
-            className={`text-sm px-4 py-2 rounded-lg transition-all font-medium flex items-center gap-1.5 ${
-              mode === 'dashboard'
-                ? 'bg-teal-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
-            }`}
-          >
-            <BarChart2 size={14} />
-            Analytics
+
+        {/* Mobile-only tab bar (navbar tabs hidden on small screens) */}
+        <div className="flex md:hidden gap-1 bg-slate-800/50 rounded-xl p-1 w-fit flex-wrap">
+          <button onClick={() => setMode('query')}    className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all ${mode === 'query'    ? 'bg-blue-600 text-white'   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`}>Query</button>
+          <button onClick={() => setMode('analyze')}  className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all ${mode === 'analyze'  ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`}>Analysis</button>
+          <button onClick={() => setMode('dashboard')} className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all ${mode === 'dashboard'? 'bg-teal-600 text-white'   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`}>Analytics</button>
+          <button onClick={() => setMode('evaluate')} className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1 ${mode === 'evaluate' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`}>
+            Eval{(evalLoading || evalResult) && <span className={`w-1.5 h-1.5 rounded-full ${evalLoading ? 'bg-yellow-400 animate-pulse' : 'bg-violet-400'}`} />}
           </button>
         </div>
 
@@ -243,12 +298,37 @@ const App: React.FC = () => {
           </ErrorBoundary>
         )}
 
+        {/* Evaluation tab */}
+        {mode === 'evaluate' && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-slate-200">RAG Evaluation Metrics</h2>
+              {analysisResult && (
+                <span className="text-xs text-slate-500 bg-slate-800 px-2.5 py-1 rounded-full">
+                  Query: <span className="text-slate-300 italic">"{analysisResult.query}"</span>
+                </span>
+              )}
+            </div>
+            {!analysisResult ? (
+              <div className="text-center py-16 space-y-3">
+                <div className="mx-auto w-14 h-14 rounded-full bg-slate-800 flex items-center justify-center">
+                  <BarChart2 size={24} className="text-slate-600" />
+                </div>
+                <p className="text-slate-500 text-sm">No evaluation data yet</p>
+                <p className="text-slate-600 text-xs">Run a Deep Analysis first — evaluation metrics will appear here automatically.</p>
+              </div>
+            ) : (
+              <EvaluationPanel result={evalResult} loading={evalLoading} />
+            )}
+          </div>
+        )}
+
         {/* Query input */}
-        {mode !== 'dashboard' && (
+        {mode !== 'dashboard' && mode !== 'evaluate' && (
           <div className="flex flex-col items-center gap-2">
             {!hasResults && (
               <div className="text-center mb-4">
-                <h2 className="text-2xl font-bold text-white mb-1">Telecom Fault Intelligence</h2>
+                <h2 className="text-2xl font-bold text-white mb-1">FaultSense AI</h2>
                 <p className="text-slate-400 text-sm max-w-xl">
                   Query your incident knowledge base with natural language. Run deep analysis to get AI-powered root cause, correlation clusters, and remediation steps.
                 </p>
@@ -259,12 +339,13 @@ const App: React.FC = () => {
               onAnalysisResult={handleAnalysisResult}
               isLoading={isLoading}
               setIsLoading={setIsLoading}
+              mode={mode}
             />
           </div>
         )}
 
         {/* Empty state */}
-        {mode !== 'dashboard' && !hasResults && !isLoading && (
+        {mode !== 'dashboard' && mode !== 'evaluate' && !hasResults && !isLoading && (
           <div className="text-center py-12 space-y-4">
             <div className="mx-auto w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center">
               <Radio size={28} className="text-slate-600" />
@@ -301,7 +382,7 @@ const App: React.FC = () => {
         )}
 
         {/* Loading state */}
-        {mode !== 'dashboard' && isLoading && (
+        {mode !== 'dashboard' && mode !== 'evaluate' && isLoading && (
           <div className="text-center py-12">
             <div className="mx-auto w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4">
               <Activity size={28} className="text-blue-400 animate-pulse" />
@@ -314,45 +395,44 @@ const App: React.FC = () => {
         )}
 
         {/* Results */}
-        {mode !== 'dashboard' && !isLoading && hasResults && (
+        {mode !== 'dashboard' && mode !== 'evaluate' && !isLoading && hasResults && (
           <div className="space-y-6">
             {/* Query mode results */}
             {mode === 'query' && queryResult && (
               <div className="space-y-4">
-                {/* Guardrail warnings */}
-                {queryResult.guardrail_warnings && queryResult.guardrail_warnings.length > 0 && (
-                  <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-xl p-4 space-y-1">
-                    <p className="text-xs font-semibold text-yellow-400">Guardrail Warnings</p>
-                    {queryResult.guardrail_warnings.map((w, i) => (
-                      <p key={i} className="text-xs text-yellow-300">{w}</p>
-                    ))}
-                  </div>
-                )}
+                {/* Guardrail panel — always shown; uses real guardrail_result from backend */}
+                <GuardrailPanel result={queryResult.guardrail_result} />
 
-                {/* Root cause suggestion */}
-                {queryResult.root_cause_suggestion && (
-                  <div className="bg-amber-950/20 border border-amber-700/40 rounded-xl p-4">
-                    <p className="text-xs font-semibold text-amber-400 mb-1">Quick Root Cause Suggestion</p>
-                    <p className="text-sm text-slate-200">{queryResult.root_cause_suggestion}</p>
-                  </div>
-                )}
+                {/* Only show search results when the guardrail passed */}
+                {queryResult.guardrail_result.valid && (
+                  <>
+                    {/* Root cause suggestion */}
+                    {queryResult.root_cause_suggestion && (
+                      <div className="bg-amber-950/20 border border-amber-700/40 rounded-xl p-4">
+                        <p className="text-xs font-semibold text-amber-400 mb-1">Quick Root Cause Suggestion</p>
+                        <p className="text-sm text-slate-200">{queryResult.root_cause_suggestion}</p>
+                      </div>
+                    )}
 
-                {/* Results count */}
-                <p className="text-xs text-slate-500">
-                  {queryResult.total_results} incident{queryResult.total_results !== 1 ? 's' : ''} found for: <span className="text-slate-300 italic">"{queryResult.query}"</span>
-                </p>
+                    {/* Results count */}
+                    <p className="text-xs text-slate-500">
+                      {queryResult.total_results} incident{queryResult.total_results !== 1 ? 's' : ''} found for:{' '}
+                      <span className="text-slate-300 italic">"{queryResult.query}"</span>
+                    </p>
 
-                {/* Incident cards */}
-                <div className="space-y-3">
-                  {incidents.map((incident, i) => (
-                    <IncidentCard key={incident.alarm_id ?? i} incident={incident} rank={i + 1} />
-                  ))}
-                </div>
+                    {/* Incident cards */}
+                    <div className="space-y-3">
+                      {incidents.map((incident, i) => (
+                        <IncidentCard key={incident.alarm_id ?? i} incident={incident} rank={i + 1} />
+                      ))}
+                    </div>
 
-                {incidents.length === 0 && (
-                  <div className="text-center py-8 text-slate-500 text-sm">
-                    No incidents matched your query and filters.
-                  </div>
+                    {incidents.length === 0 && (
+                      <div className="text-center py-8 text-slate-500 text-sm">
+                        No incidents matched your query and filters.
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -360,39 +440,47 @@ const App: React.FC = () => {
             {/* Analysis mode results */}
             {mode === 'analyze' && analysisResult && (
               <div className="space-y-6">
-                {/* Agent trace */}
-                <div className="bg-slate-900/50 border border-slate-700 rounded-2xl p-5">
-                  <AgentTrace
-                    trace={analysisResult.reasoning_trace}
-                    severityEscalated={analysisResult.severity_escalated}
-                  />
-                </div>
+                {/* Guardrail validation — always shown */}
+                <GuardrailPanel result={analysisResult.guardrail_result} />
 
-                {/* Root cause + correlations */}
-                <div className="bg-slate-900/50 border border-slate-700 rounded-2xl p-5">
-                  <RootCausePanel
-                    rootCause={analysisResult.root_cause}
-                    serviceImpact={analysisResult.service_impact}
-                    correlations={analysisResult.correlated_alarms}
-                    escalated={analysisResult.severity_escalated}
-                  />
-                </div>
+                {/* Only show pipeline results when the guardrail passed */}
+                {analysisResult.guardrail_result.valid && (
+                  <>
+                    {/* Agent trace */}
+                    <div className="bg-slate-900/50 border border-slate-700 rounded-2xl p-5">
+                      <AgentTrace
+                        trace={analysisResult.reasoning_trace}
+                        severityEscalated={analysisResult.severity_escalated}
+                      />
+                    </div>
 
-                {/* Recommendations */}
-                <div className="bg-slate-900/50 border border-slate-700 rounded-2xl p-5">
-                  <RecommendationList recommendations={analysisResult.recommendations} />
-                </div>
+                    {/* Root cause + correlations */}
+                    <div className="bg-slate-900/50 border border-slate-700 rounded-2xl p-5">
+                      <RootCausePanel
+                        rootCause={analysisResult.root_cause}
+                        serviceImpact={analysisResult.service_impact}
+                        correlations={analysisResult.correlated_alarms}
+                        escalated={analysisResult.severity_escalated}
+                      />
+                    </div>
 
-                {/* Retrieved incidents */}
-                {incidents.length > 0 && (
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold text-slate-400">
-                      Retrieved Incidents ({incidents.length})
-                    </h3>
-                    {incidents.map((incident, i) => (
-                      <IncidentCard key={incident.alarm_id ?? i} incident={incident} rank={i + 1} />
-                    ))}
-                  </div>
+                    {/* Recommendations */}
+                    <div className="bg-slate-900/50 border border-slate-700 rounded-2xl p-5">
+                      <RecommendationList recommendations={analysisResult.recommendations} />
+                    </div>
+
+                    {/* Retrieved incidents */}
+                    {incidents.length > 0 && (
+                      <div className="space-y-3">
+                        <h3 className="text-sm font-semibold text-slate-400">
+                          Retrieved Incidents ({incidents.length})
+                        </h3>
+                        {incidents.map((incident, i) => (
+                          <IncidentCard key={incident.alarm_id ?? i} incident={incident} rank={i + 1} />
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -403,7 +491,7 @@ const App: React.FC = () => {
 
       {/* Footer */}
       <footer className="border-t border-slate-800 py-4 text-center text-xs text-slate-600">
-        TelecomNetworkFaultIntel — RAG + LangGraph Fault Intelligence Platform
+        FaultSense AI — Telecom Network Intelligence · RAG + LangGraph
       </footer>
     </div>
   );

@@ -11,8 +11,22 @@ router = APIRouter(prefix="/api", tags=["Analysis"])
 @router.post("/analyze", response_model=AnalysisResponse)
 async def analyze_fault(request: AnalysisRequest):
     guard = validate_query(request.query)
+
+    # Return a structured 200 response even when blocked so the UI can
+    # render the GuardrailPanel with the reason instead of a generic 422.
     if not guard["valid"]:
-        raise HTTPException(status_code=422, detail=guard["error"])
+        logger.info(f"Analysis blocked by guardrail: {guard['error']!r}")
+        return AnalysisResponse(
+            query=request.query,
+            guardrail_result=guard,
+            retrieved_incidents=[],
+            correlated_alarms=[],
+            root_cause="",
+            service_impact="",
+            recommendations=[],
+            reasoning_trace=[],
+            severity_escalated=False,
+        )
 
     filters = request.filters.model_dump(exclude_none=True) if request.filters else {}
 

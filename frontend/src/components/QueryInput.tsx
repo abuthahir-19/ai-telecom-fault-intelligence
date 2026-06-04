@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { Search, Zap, Loader2, AlertCircle, SlidersHorizontal } from 'lucide-react';
 import { queryIncidents, analyzeIncident } from '../api/client';
-import type { QueryResponse, AnalysisResponse, MetadataFilters } from '../types';
+import type { QueryResponse, AnalysisResponse, MetadataFilters, AppMode } from '../types';
 
 interface QueryInputProps {
   onQueryResult: (result: QueryResponse) => void;
   onAnalysisResult: (result: AnalysisResponse) => void;
   isLoading: boolean;
   setIsLoading: (v: boolean) => void;
+  mode: AppMode;
 }
 
 const REGIONS = ['', 'North', 'South', 'East', 'West', 'Central', 'Northeast', 'Northwest', 'Southeast', 'Southwest'];
@@ -15,12 +16,15 @@ const SEVERITIES = ['', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 const VENDORS = ['', 'Ericsson', 'Nokia', 'Huawei', 'Cisco', 'Juniper', 'ZTE', 'Samsung'];
 const TECHNOLOGIES = ['', '5G', '4G LTE', '3G', '2G', 'Fiber', 'Microwave', 'MPLS', 'SDH'];
 
-const QueryInput: React.FC<QueryInputProps> = ({ onQueryResult, onAnalysisResult, isLoading, setIsLoading }) => {
+const QueryInput: React.FC<QueryInputProps> = ({ onQueryResult, onAnalysisResult, isLoading, setIsLoading, mode }) => {
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<MetadataFilters>({});
   const [topK, setTopK] = useState(10);
   const [error, setError] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  // Tracks which specific button triggered the current load so only that
+  // button shows a spinner — the other stays visually idle.
+  const [loadingAction, setLoadingAction] = useState<'query' | 'analyze' | null>(null);
 
   const updateFilter = (key: keyof MetadataFilters, value: string) => {
     setFilters(prev => {
@@ -43,37 +47,33 @@ const QueryInput: React.FC<QueryInputProps> = ({ onQueryResult, onAnalysisResult
   };
 
   const handleQuery = async () => {
-    if (!query.trim()) {
-      setError('Please enter a query.');
-      return;
-    }
+    if (!query.trim()) { setError('Please enter a query.'); return; }
     setError(null);
+    setLoadingAction('query');
     setIsLoading(true);
     try {
       const result = await queryIncidents({ query: query.trim(), filters: cleanFilters(), top_k: topK });
       onQueryResult(result);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Query failed. Is the backend running?';
-      setError(msg);
+      setError(err instanceof Error ? err.message : 'Query failed. Is the backend running?');
     } finally {
+      setLoadingAction(null);
       setIsLoading(false);
     }
   };
 
   const handleAnalyze = async () => {
-    if (!query.trim()) {
-      setError('Please enter a query.');
-      return;
-    }
+    if (!query.trim()) { setError('Please enter a query.'); return; }
     setError(null);
+    setLoadingAction('analyze');
     setIsLoading(true);
     try {
       const result = await analyzeIncident({ query: query.trim(), filters: cleanFilters(), top_k: topK });
       onAnalysisResult(result);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Analysis failed. Is the backend running?';
-      setError(msg);
+      setError(err instanceof Error ? err.message : 'Analysis failed. Is the backend running?');
     } finally {
+      setLoadingAction(null);
       setIsLoading(false);
     }
   };
@@ -181,21 +181,38 @@ const QueryInput: React.FC<QueryInputProps> = ({ onQueryResult, onAnalysisResult
 
       {/* Action buttons */}
       <div className="flex gap-3">
+        {/* Quick Search — active only in Query Mode */}
         <button
           onClick={handleQuery}
-          disabled={isLoading || !query.trim()}
-          className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium rounded-xl px-6 py-3 transition-all text-sm"
+          disabled={loadingAction !== null || !query.trim() || mode === 'analyze'}
+          title={mode === 'analyze' ? 'Switch to Query Mode to use Quick Search' : ''}
+          className={`flex-1 flex items-center justify-center gap-2 font-medium rounded-xl px-6 py-3 transition-all text-sm
+            ${mode === 'analyze'
+              ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50'
+              : 'bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white'
+            }`}
         >
-          {isLoading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-          Quick Search
+          {loadingAction === 'query'
+            ? <Loader2 size={16} className="animate-spin" />
+            : <Search size={16} />}
+          {loadingAction === 'query' ? 'Searching…' : 'Quick Search'}
         </button>
+
+        {/* Deep Analysis — active only in Deep Analysis mode */}
         <button
           onClick={handleAnalyze}
-          disabled={isLoading || !query.trim()}
-          className="flex-1 flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium rounded-xl px-6 py-3 transition-all text-sm"
+          disabled={loadingAction !== null || !query.trim() || mode === 'query'}
+          title={mode === 'query' ? 'Switch to Deep Analysis to use this' : ''}
+          className={`flex-1 flex items-center justify-center gap-2 font-medium rounded-xl px-6 py-3 transition-all text-sm
+            ${mode === 'query'
+              ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50'
+              : 'bg-violet-600 hover:bg-violet-500 disabled:bg-slate-700 disabled:text-slate-500 text-white'
+            }`}
         >
-          {isLoading ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
-          Deep Analysis
+          {loadingAction === 'analyze'
+            ? <Loader2 size={16} className="animate-spin" />
+            : <Zap size={16} />}
+          {loadingAction === 'analyze' ? 'Analysing…' : 'Deep Analysis'}
         </button>
       </div>
 

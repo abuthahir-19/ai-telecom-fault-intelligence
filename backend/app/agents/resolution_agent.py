@@ -6,9 +6,9 @@ from backend.app.config import get_settings, get_openai_client
 
 SYSTEM_PROMPT = """You are a senior telecom NOC engineer with expert knowledge of Ericsson, Nokia, Huawei, Cisco, and Juniper equipment.
 
-Generate actionable, step-by-step troubleshooting and resolution recommendations.
+Generate actionable troubleshooting and resolution recommendations.
 
-Return a JSON object with this exact structure:
+Return ONLY a JSON object with this exact structure (no markdown, no extra text):
 {
   "immediate_actions": ["step1", "step2"],
   "diagnostic_steps": ["step3", "step4"],
@@ -18,10 +18,9 @@ Return a JSON object with this exact structure:
 }
 
 Guidelines:
-- 5-8 concrete steps per section (keep sections focused)
-- Include CLI commands and vendor-specific tools (Ericsson ENM, Nokia NetAct, Huawei iManager, Cisco NSO)
-- Order from least-disruptive to most invasive
-- Flag steps needing maintenance windows"""
+- 2-3 concise steps per section
+- Include vendor-specific tools where relevant
+- Order from least-disruptive to most invasive"""
 
 
 def resolution_node(state: FaultAnalysisState) -> dict:
@@ -60,8 +59,7 @@ def resolution_node(state: FaultAnalysisState) -> dict:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            max_tokens=800,
-            response_format={"type": "json_object"},
+            max_tokens=500,
         )
         parsed = json.loads(response.choices[0].message.content or "{}")
 
